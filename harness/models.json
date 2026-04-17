@@ -1,0 +1,119 @@
+{
+  "anthropic/claude-opus-4.7": {
+    "alias": "opus-4.7",
+    "provider": "anthropic",
+    "context": 200000,
+    "price_input_per_1m": 15.0,
+    "price_output_per_1m": 75.0,
+    "thinking": true,
+    "notes": "Top tier Anthropic 2026. Cher, meilleur sur raisonnement complexe."
+  },
+  "anthropic/claude-sonnet-4.6": {
+    "alias": "sonnet-4.6",
+    "provider": "anthropic",
+    "context": 200000,
+    "price_input_per_1m": 3.0,
+    "price_output_per_1m": 15.0,
+    "thinking": true,
+    "notes": "Sweet spot qualite/prix Anthropic."
+  },
+  "anthropic/claude-haiku-4.5": {
+    "alias": "haiku-4.5",
+    "provider": "anthropic",
+    "context": 200000,
+    "price_input_per_1m": 1.0,
+    "price_output_per_1m": 5.0,
+    "thinking": false,
+    "notes": "Fast and cheap. Candidat si qualite acceptable."
+  },
+  "openai/gpt-5": {
+    "alias": "gpt-5",
+    "provider": "openai",
+    "context": 1000000,
+    "price_input_per_1m": 10.0,
+    "price_output_per_1m": 30.0,
+    "thinking": true,
+    "notes": "Concurrent direct Opus. Contexte 1M."
+  },
+  "google/gemini-2.5-pro": {
+    "alias": "gemini-2.5-pro",
+    "provider": "google",
+    "context": 2000000,
+    "price_input_per_1m": 2.5,
+    "price_output_per_1m": 10.0,
+    "thinking": true,
+    "notes": "Contexte 2M, bon rapport qualite/prix."
+  },
+  "meta-llama/llama-3.3-70b-instruct": {
+    "alias": "llama-3.3-70b",
+    "provider": "meta",
+    "context": 128000,
+    "price_input_per_1m": 0.35,
+    "price_output_per_1m": 0.4,
+    "thinking": false,
+    "notes": "Open weights, cheap. Baseline concurrentielle."
+  },
+  "deepseek/deepseek-r1": {
+    "alias": "deepseek-r1",
+    "provider": "deepseek",
+    "context": 128000,
+    "price_input_per_1m": 0.55,
+    "price_output_per_1m": 2.19,
+    "thinking": true,
+    "notes": "Reasoning model cheap. A surveiller."
+  },
+  "x-ai/grok-4": {
+    "alias": "grok-4",
+    "provider": "xai",
+    "context": 256000,
+    "price_input_per_1m": 5.0,
+    "price_output_per_1m": 15.0,
+    "thinking": true,
+    "notes": "Grok 4, ton moins filtrant. Bon test calibration."
+  },
+  "openai/gpt-5.4": {
+    "alias": "gpt-5.4",
+    "provider": "openai",
+    "context": 1050000,
+    "price_input_per_1m": 2.5,
+    "price_output_per_1m": 15.0,
+    "thinking": true,
+    "notes": "GPT-5.4. 4x moins cher en input que GPT-5. Contexte 1M."
+  },
+  "google/gemini-3.1-flash-lite-preview": {
+    "alias": "gemini-3.1-flash-lite",
+    "provider": "google",
+    "context": 1048576,
+    "price_input_per_1m": 0.25,
+    "price_output_per_1m": 1.5,
+    "thinking": false,
+    "notes": "Gemini 3.1 Flash Lite preview. Cheap + 1M ctx. Candidat baseline volume."
+  },
+  "google/gemini-3.1-pro-preview": {
+    "alias": "gemini-3.1-pro",
+    "provider": "google",
+    "context": 1048576,
+    "price_input_per_1m": 2.0,
+    "price_output_per_1m": 12.0,
+    "thinking": true,
+    "notes": "Gemini 3.1 Pro preview. 1M ctx, successeur 2.5 Pro, prix similaire."
+  },
+  "mistralai/mistral-large-2512": {
+    "alias": "mistral-large-2512",
+    "provider": "mistral",
+    "context": 262144,
+    "price_input_per_1m": 0.5,
+    "price_output_per_1m": 1.5,
+    "thinking": false,
+    "notes": "Mistral Large dec 2025. 4x moins cher que 2411. 256k ctx."
+  },
+  "mistralai/mistral-small-2603": {
+    "alias": "mistral-small-2603",
+    "provider": "mistral",
+    "context": 262144,
+    "price_input_per_1m": 0.15,
+    "price_output_per_1m": 0.6,
+    "thinking": false,
+    "notes": "Mistral Small mars 2026. Cheap (~0.15/0.60), 256k ctx. Candidat volume."
+  }
+}

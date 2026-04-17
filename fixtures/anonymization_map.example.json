@@ -1,0 +1,10 @@
+{
+  "_comment": "Copie ce fichier vers fixtures/anonymization_map.json et remplace les mappings par tes vrais noms -> pseudos. Le vrai fichier est gitignore car il contient les noms de tes contacts reels. Ordre : patterns longs en premier pour eviter les collisions (ex: 'Nom Complet Prenom' avant 'Prenom' seul).",
+
+  "Vrai Nom Complet": "Pseudo Fictif",
+  "Prenom": "Pseudo",
+
+  "Nom Entreprise Reelle": "ClientFictif",
+  "email@realdomain.com": "contact@example.com",
+  "realdomain.com": "example.com"
+}

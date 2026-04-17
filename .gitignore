@@ -1,0 +1,13 @@
+.env
+.env.local
+__pycache__/
+*.pyc
+.venv/
+venv/
+.pytest_cache/
+.DS_Store
+runs/*/
+!runs/.gitkeep
+# Fixtures contenant des donnees personnelles (vrais noms du reseau, vault concret)
+fixtures/vault_dump.md
+fixtures/anonymization_map.json
