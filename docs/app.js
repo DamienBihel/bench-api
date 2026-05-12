@@ -3,8 +3,21 @@ const COLORS = ["#7cc4ff", "#f8b26a", "#b794f6", "#4ade80", "#f87171", "#fbbf24"
 let DATA = null;
 let CURRENT_RUN = null;
 let SELECTED_MODELS = new Set();
-let CURRENT_TEST = null;
 const charts = {};
+
+// Ranking sort state
+let rankSortCol = "score";
+let rankSortDir = "desc";
+
+// Persiste quels <details> tests sont ouverts entre rebuilds
+const OPEN_TESTS_KEY = "bench-api-open-tests";
+function getOpenTests() {
+  try { return new Set(JSON.parse(localStorage.getItem(OPEN_TESTS_KEY) || "[]")); }
+  catch { return new Set(); }
+}
+function saveOpenTests(set) {
+  localStorage.setItem(OPEN_TESTS_KEY, JSON.stringify([...set]));
+}
 
 function getCssVar(name) {
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim() || "";
@@ -15,7 +28,7 @@ function applyTheme(theme) {
   document.documentElement.setAttribute("data-theme", theme);
   localStorage.setItem("bench-api-theme", theme);
   const btn = document.getElementById("theme-toggle");
-  if (btn) btn.textContent = theme === "light" ? "🌙" : "☀️";
+  if (btn) btn.textContent = theme === "light" ? "\u{1F319}" : "☀️";
   if (CURRENT_RUN) renderAll();
 }
 function initTheme() {
@@ -37,22 +50,17 @@ async function load() {
   const gen = document.getElementById("generated");
   if (DATA.generated_at) gen.textContent = "Généré : " + DATA.generated_at.replace("T", " ").slice(0, 16) + " UTC";
 
-  const select = document.getElementById("run-select");
-  DATA.runs.forEach((r, i) => {
-    const opt = document.createElement("option");
-    opt.value = i;
-    opt.textContent = r.name;
-    select.appendChild(opt);
-  });
-  select.value = DATA.runs.length - 1;
-  select.addEventListener("change", () => loadRun(DATA.runs[select.value]));
+  initModelPanel();
 
   document.querySelectorAll(".tab").forEach(btn => {
     btn.addEventListener("click", () => switchTab(btn.dataset.tab));
   });
 
-  if (DATA.runs.length) loadRun(DATA.runs[select.value]);
-  else document.getElementById("kpis").innerHTML = `<div class="kpi"><div class="label">Aucun run</div><div class="value">—</div><div class="sub-value">Lance d'abord python harness/run.py</div></div>`;
+  if (DATA.runs && DATA.runs.length) {
+    loadRun(DATA.runs[0]);
+  } else {
+    document.getElementById("ranking-table").innerHTML = `<p class="hint">Aucun run disponible. Lance d'abord python harness/run.py</p>`;
+  }
 }
 
 function switchTab(name) {
@@ -65,7 +73,6 @@ function loadRun(run) {
   const models = uniqueModels(run);
   SELECTED_MODELS = new Set(models);
   buildModelCheckboxes(models);
-  buildTestSelector(run);
   renderAll();
 }
 
@@ -74,7 +81,6 @@ function modelMeta(model) { return (DATA.models || {})[model] || {}; }
 function modelAlias(model) {
   const meta = modelMeta(model);
   if (meta.alias) return meta.alias;
-  // Fallback : utilise alias du metrics
   if (CURRENT_RUN) {
     const m = CURRENT_RUN.metrics.find(r => r.model === model);
     if (m && m.alias) return m.alias;
@@ -91,120 +97,73 @@ function modelSizeLabel(model) {
   return bits.join(" · ");
 }
 
+const PROVIDER_ORDER = ["anthropic", "openai", "google", "mistral", "xai", "deepseek", "meta"];
+
 function buildModelCheckboxes(models) {
   const cb = document.getElementById("model-checkboxes");
-  cb.innerHTML = "<legend>Modèles affichés</legend>";
-  models.forEach((m, i) => {
-    const id = "cb-" + m.replace(/[^a-z0-9]/gi, "_");
-    const alias = modelAlias(m);
-    const sizeLabel = modelSizeLabel(m);
-    const label = document.createElement("label");
-    label.innerHTML = `<input type="checkbox" id="${id}" value="${m}" checked> <span style="color:${COLORS[i % COLORS.length]}">●</span> <strong>${alias}</strong>${sizeLabel ? ` <span class="model-size">(${sizeLabel})</span>` : ""}`;
-    label.querySelector("input").addEventListener("change", e => {
-      if (e.target.checked) SELECTED_MODELS.add(m); else SELECTED_MODELS.delete(m);
-      renderAll();
-    });
-    cb.appendChild(label);
+  cb.innerHTML = "";
+
+  const groups = {};
+  models.forEach(m => {
+    const meta = modelMeta(m);
+    const provider = meta._orphan ? "__autres" : (meta.provider || "__autres");
+    (groups[provider] = groups[provider] || []).push(m);
   });
+
+  const knownProviders = PROVIDER_ORDER.filter(p => groups[p]);
+  const unknownProviders = Object.keys(groups)
+    .filter(p => p !== "__autres" && !PROVIDER_ORDER.includes(p))
+    .sort();
+  const providerList = [...knownProviders, ...unknownProviders];
+  if (groups["__autres"]) providerList.push("__autres");
+
+  providerList.forEach(provider => {
+    const groupModels = groups[provider].slice().sort((a, b) =>
+      modelAlias(a).localeCompare(modelAlias(b))
+    );
+
+    const header = document.createElement("div");
+    header.className = "provider-group-header";
+    header.textContent = provider === "__autres" ? "AUTRES" : provider.toUpperCase();
+    cb.appendChild(header);
+
+    groupModels.forEach(m => {
+      const id = "cb-" + m.replace(/[^a-z0-9]/gi, "_");
+      const alias = modelAlias(m);
+      const sizeLabel = modelSizeLabel(m);
+      const label = document.createElement("label");
+      label.innerHTML = `<input type="checkbox" id="${id}" value="${m}" checked> <span style="color:${modelColor(m)}">&#9679;</span> <strong>${alias}</strong>${sizeLabel ? ` <span class="model-size">(${sizeLabel})</span>` : ""}`;
+      label.querySelector("input").addEventListener("change", e => {
+        if (e.target.checked) SELECTED_MODELS.add(m); else SELECTED_MODELS.delete(m);
+        updateModelCount();
+        renderAll();
+      });
+      cb.appendChild(label);
+    });
+  });
+  updateModelCount();
 }
 
-function buildTestSelector(run) {
-  const tests = uniqueTests(run);
-  const sel = document.getElementById("test-select");
-  sel.innerHTML = "";
-  tests.forEach(([id, label]) => {
-    const opt = document.createElement("option");
-    opt.value = id;
-    opt.textContent = id + " — " + label;
-    sel.appendChild(opt);
+function updateModelCount() {
+  const el = document.getElementById("model-count");
+  if (!el || !CURRENT_RUN) return;
+  el.textContent = `${SELECTED_MODELS.size}/${uniqueModels(CURRENT_RUN).length}`;
+}
+
+function initModelPanel() {
+  const panel = document.getElementById("model-panel");
+  if (!panel) return;
+  panel.open = localStorage.getItem("bench-api-model-panel-open") === "1";
+  panel.addEventListener("toggle", () => {
+    localStorage.setItem("bench-api-model-panel-open", panel.open ? "1" : "0");
   });
-  CURRENT_TEST = tests[0]?.[0] || null;
-  sel.value = CURRENT_TEST;
-  sel.onchange = () => { CURRENT_TEST = sel.value; renderResponses(); };
 }
 
 function renderAll() {
-  renderKPIs();
-  renderCostChart();
-  renderLatencyChart();
-  renderReasoningChart();
+  renderRankingTable();
   renderParetoChart();
-  renderScoresChart();
-  renderScoresByTest();
-  renderTestsCatalog();
-  renderResponses();
-}
-
-function renderTestsCatalog() {
-  const container = document.getElementById("tests-catalog");
-  container.innerHTML = "";
-  const prompts = DATA.prompts || [];
-
-  // Group tests by axe
-  const byAxe = {};
-  prompts.forEach(p => {
-    const axe = p.axe || "autre";
-    (byAxe[axe] = byAxe[axe] || []).push(p);
-  });
-
-  const axeOrder = ["calibration", "instruction_following", "long_context", "business"];
-  const axeLabels = {
-    calibration: "Calibration (5 tests)",
-    instruction_following: "Instruction following (1 test)",
-    long_context: "Long context (1 test)",
-    business: "Business (1 test)",
-  };
-
-  axeOrder.concat(Object.keys(byAxe).filter(a => !axeOrder.includes(a))).forEach(axe => {
-    const tests = byAxe[axe];
-    if (!tests || !tests.length) return;
-
-    const axeBlock = document.createElement("div");
-    axeBlock.className = "test-block";
-    axeBlock.style.marginBottom = "1.5rem";
-
-    let html = `<h3 style="color:var(--accent); font-size:1rem; margin-bottom:1rem;">${axeLabels[axe] || axe}</h3>`;
-
-    tests.forEach(t => {
-      const promptText = t.prompt || t.prompt_template || "";
-      const promptPreview = promptText.replace("{vault_dump}", "[~50k tokens vault]").replace("{brief}", "[brief client fictif]");
-      const criteria = t.criteria || [];
-
-      html += `<details style="margin-bottom:.75rem; background:var(--card); border:1px solid var(--border); border-radius:6px; padding:.75rem 1rem;">`;
-      html += `<summary style="cursor:pointer; font-weight:600; color:var(--fg);">${escapeHtml(t.id)} — ${escapeHtml(t.label)} <span class="model-size">(${criteria.length} critères)</span></summary>`;
-      html += `<div style="margin-top:.75rem;">`;
-
-      if (t.description) {
-        html += `<p style="margin:.5rem 0;"><strong>Objectif :</strong> ${escapeHtml(t.description)}</p>`;
-      }
-
-      html += `<div style="margin:.75rem 0;"><strong>Prompt envoyé :</strong>`;
-      html += `<pre style="margin-top:.35rem; white-space:pre-wrap; word-wrap:break-word; max-width:100%;">${escapeHtml(promptPreview)}</pre></div>`;
-
-      if (criteria.length) {
-        html += `<div style="margin-top:.75rem;"><strong>Critères de scoring (${criteria.length}) :</strong>`;
-        html += `<table class="criteria-table" style="margin-top:.35rem;"><thead><tr>`;
-        html += `<th style="width:25%;">Id</th><th>Description (condition PASS)</th>`;
-        html += `</tr></thead><tbody>`;
-        criteria.forEach(c => {
-          html += `<tr>`;
-          html += `<td><code>${escapeHtml(c.id)}</code></td>`;
-          html += `<td>${escapeHtml(c.desc || "")}</td>`;
-          html += `</tr>`;
-        });
-        html += `</tbody></table></div>`;
-      }
-
-      html += `</div></details>`;
-    });
-
-    axeBlock.innerHTML = html;
-    container.appendChild(axeBlock);
-  });
-
-  if (!prompts.length) {
-    container.innerHTML = `<p class="hint">Pas de prompts charges.</p>`;
-  }
+  renderPivotTable();
+  renderTestsCombined();
 }
 
 /* ---------- helpers ---------- */
@@ -219,6 +178,12 @@ function modelColor(model) {
   const all = uniqueModels(CURRENT_RUN);
   return COLORS[all.indexOf(model) % COLORS.length];
 }
+function humanizeCriterionId(id) {
+  const stripped = id.replace(/^[a-z0-9]+_/, "");
+  const spaced = stripped.replace(/_/g, " ");
+  return spaced.charAt(0).toUpperCase() + spaced.slice(1);
+}
+
 function escapeHtml(s) {
   if (s == null) return "";
   return String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
@@ -227,114 +192,144 @@ function scoresForTest(model, test_id) {
   return (CURRENT_RUN.scores || []).filter(s => s.model === model && s.test_id === test_id);
 }
 
-/* ---------- KPIs ---------- */
-function renderKPIs() {
-  const container = document.getElementById("kpis");
-  container.innerHTML = "";
+/* ---------- Ranking table ---------- */
+function modelLastRun(model) {
+  const rows = CURRENT_RUN.metrics.filter(r => r.model === model && r.source_run);
+  if (!rows.length) return null;
+  return rows.map(r => r.source_run).sort().pop();
+}
+
+function buildRankingData() {
   const models = activeModels();
-  if (!models.length) {
-    container.innerHTML = `<div class="kpi"><div class="label">Aucun modèle</div><div class="value">—</div></div>`;
-    return;
-  }
-
-  const add = (label, value, sub) => {
-    const div = document.createElement("div");
-    div.className = "kpi";
-    div.innerHTML = `<div class="label">${label}</div><div class="value">${value}</div>${sub ? `<div class="sub-value">${sub}</div>` : ""}`;
-    container.appendChild(div);
-  };
-
-  models.forEach(m => {
+  return models.map(m => {
     const rows = CURRENT_RUN.metrics.filter(r => r.model === m);
-    if (!rows.length) return;
     const totalCost = rows.reduce((s, r) => s + (r.cost_usd || 0), 0);
-    const avgLat = rows.reduce((s, r) => s + (r.latency_s || 0), 0) / rows.length;
+    const avgLat = rows.length ? rows.reduce((s, r) => s + (r.latency_s || 0), 0) / rows.length : 0;
     const totalReasoning = rows.reduce((s, r) => s + (r.reasoning_tokens || 0), 0);
     const totalOut = rows.reduce((s, r) => s + (r.tokens_out || 0), 0);
-    const ratioReasoning = totalOut ? totalReasoning / totalOut : 0;
-    // Comptage failures (tokens_out=0 ou success=False)
-    const failedCount = rows.filter(r => !r.success || Number(r.tokens_out) === 0).length;
-    const retriedCount = rows.filter(r => Number(r.retries || 0) > 0).length;
-
+    const ratioReasoning = totalOut ? Math.round((totalReasoning / totalOut) * 100) : 0;
     const scoreRows = (CURRENT_RUN.scores || []).filter(s => s.model === m);
-    let scoreLine = "scoring n/a";
-    if (scoreRows.length) {
-      const pass = scoreRows.filter(s => s.resultat === "PASS").length;
-      const pct = Math.round((pass / scoreRows.length) * 100);
-      scoreLine = `${pct}% PASS (${pass}/${scoreRows.length})`;
+    const scorePct = scoreRows.length ? Math.round((scoreRows.filter(s => s.resultat === "PASS").length / scoreRows.length) * 100) : null;
+    const meta = modelMeta(m);
+    const isOrphan = meta._orphan === true;
+    const lastRun = modelLastRun(m);
+    return { model: m, alias: modelAlias(m), scorePct, totalCost, avgLat, totalReasoning, ratioReasoning, isOrphan, lastRun };
+  });
+}
+
+function sortRankingData(rows) {
+  return [...rows].sort((a, b) => {
+    let va, vb;
+    if (rankSortCol === "score") {
+      va = a.scorePct ?? -1;
+      vb = b.scorePct ?? -1;
+    } else if (rankSortCol === "cost") {
+      va = a.totalCost;
+      vb = b.totalCost;
+    } else if (rankSortCol === "latency") {
+      va = a.avgLat;
+      vb = b.avgLat;
+    } else if (rankSortCol === "reasoning") {
+      va = a.totalReasoning;
+      vb = b.totalReasoning;
+    } else if (rankSortCol === "lastrun") {
+      va = a.lastRun || "";
+      vb = b.lastRun || "";
+    } else {
+      va = a.alias;
+      vb = b.alias;
     }
-
-    const subBits = [
-      `$${totalCost.toFixed(4)}`,
-      `~${avgLat.toFixed(1)}s/test`,
-    ];
-    if (totalReasoning) subBits.push(`${totalReasoning.toLocaleString()} think (${Math.round(ratioReasoning * 100)}%)`);
-    if (failedCount > 0) subBits.push(`<span style="color:var(--fail)">${failedCount} FAIL</span>`);
-    if (retriedCount > 0) subBits.push(`${retriedCount} retried`);
-    subBits.push(scoreLine);
-
-    add(modelAlias(m), scoreRows.length
-      ? `${Math.round((scoreRows.filter(s => s.resultat === "PASS").length / scoreRows.length) * 100)}%`
-      : "—",
-      subBits.join(" · "));
+    if (va < vb) return rankSortDir === "asc" ? -1 : 1;
+    if (va > vb) return rankSortDir === "asc" ? 1 : -1;
+    // Secondary sort: score desc, cost asc
+    if (rankSortCol !== "score") {
+      const diff = (b.scorePct ?? -1) - (a.scorePct ?? -1);
+      if (diff !== 0) return diff;
+    }
+    if (rankSortCol !== "cost") return a.totalCost - b.totalCost;
+    return 0;
   });
 }
 
-/* ---------- Charts ---------- */
-function makeDataset(field) {
-  const models = activeModels();
-  const tests = uniqueTests(CURRENT_RUN);
-  const labels = tests.map(([id]) => id);
-  const datasets = models.map(m => ({
-    label: modelAlias(m),
-    data: tests.map(([id]) => {
-      const row = CURRENT_RUN.metrics.find(r => r.model === m && r.test_id === id);
-      return row ? row[field] : null;
-    }),
-    backgroundColor: modelColor(m),
-    borderColor: modelColor(m),
-  }));
-  return { labels, datasets };
+function scoreClass(pct) {
+  if (pct === null) return "";
+  if (pct >= 80) return "score-high";
+  if (pct >= 65) return "score-mid";
+  return "score-low";
 }
 
-function renderBarChart(id, field, yLabel, formatter) {
-  const ctx = document.getElementById(id);
-  if (charts[id]) charts[id].destroy();
-  charts[id] = new Chart(ctx, {
-    type: "bar",
-    data: makeDataset(field),
-    options: {
-      responsive: true,
-      plugins: {
-        legend: { labels: { color: getCssVar("--fg") } },
-        tooltip: {
-          mode: "index",
-          intersect: false,
-          callbacks: formatter ? { label: c => c.dataset.label + ": " + formatter(c.parsed.y) } : {},
-        },
-      },
-      scales: {
-        x: { ticks: { color: getCssVar("--chart-tick") }, grid: { color: getCssVar("--chart-grid") } },
-        y: {
-          ticks: { color: getCssVar("--chart-tick"), callback: formatter || (v => v) },
-          grid: { color: getCssVar("--chart-grid") },
-          title: { display: true, text: yLabel, color: getCssVar("--chart-tick") },
-        },
-      },
-    },
+function renderRankingTable() {
+  const container = document.getElementById("ranking-table");
+  const rows = buildRankingData();
+  if (!rows.length) {
+    container.innerHTML = `<p class="hint">Aucun modèle sélectionné.</p>`;
+    return;
+  }
+  const sorted = sortRankingData(rows);
+
+  const cols = [
+    { key: "rank",      label: "#",            sortable: false },
+    { key: "model",     label: "Modèle",       sortable: true  },
+    { key: "score",     label: "Score %",      sortable: true  },
+    { key: "cost",      label: "Coût total $",  sortable: true  },
+    { key: "latency",   label: "Latence moy/test", sortable: true },
+    { key: "reasoning", label: "Reasoning",    sortable: true  },
+    { key: "lastrun",   label: "Dernier test", sortable: true  },
+  ];
+
+  let html = `<table class="ranking-table"><thead><tr>`;
+  cols.forEach(c => {
+    if (!c.sortable) {
+      html += `<th>${c.label}</th>`;
+    } else {
+      const active = rankSortCol === c.key;
+      const arrow = active ? (rankSortDir === "asc" ? " &#9650;" : " &#9660;") : "";
+      html += `<th class="sortable${active ? " sort-active" : ""}" data-col="${c.key}">${c.label}${arrow}</th>`;
+    }
+  });
+  html += `</tr></thead><tbody>`;
+
+  sorted.forEach((r, i) => {
+    const scoreTd = r.scorePct !== null
+      ? `<span class="score-val ${scoreClass(r.scorePct)}">${r.scorePct}%</span>`
+      : `<span class="score-val">—</span>`;
+    const costTd = `$${r.totalCost.toFixed(4)}`;
+    const latTd = `${r.avgLat.toFixed(1)}s`;
+    const reasoningTd = r.totalReasoning > 0
+      ? `${r.totalReasoning.toLocaleString()} (${r.ratioReasoning}%)`
+      : "—";
+    const orphanBadge = r.isOrphan ? ` <span class="badge-orphan">ancien</span>` : "";
+    const lastRunTd = r.lastRun || "—";
+
+    html += `<tr>`;
+    html += `<td class="rank-num">${i + 1}</td>`;
+    html += `<td class="model-name">${escapeHtml(r.alias)}${orphanBadge}</td>`;
+    html += `<td class="num">${scoreTd}</td>`;
+    html += `<td class="num mono">${costTd}</td>`;
+    html += `<td class="num mono">${latTd}</td>`;
+    html += `<td class="num mono">${reasoningTd}</td>`;
+    html += `<td class="mono muted-cell">${escapeHtml(lastRunTd)}</td>`;
+    html += `</tr>`;
+  });
+
+  html += `</tbody></table>`;
+  container.innerHTML = html;
+
+  container.querySelectorAll("th.sortable").forEach(th => {
+    th.addEventListener("click", () => {
+      const col = th.dataset.col;
+      if (rankSortCol === col) {
+        rankSortDir = rankSortDir === "asc" ? "desc" : "asc";
+      } else {
+        rankSortCol = col;
+        rankSortDir = col === "cost" || col === "latency" ? "asc" : "desc";
+      }
+      renderRankingTable();
+    });
   });
 }
 
-function renderCostChart() {
-  renderBarChart("chart-cost", "cost_usd", "$ par test", v => "$" + Number(v).toFixed(4));
-}
-function renderLatencyChart() {
-  renderBarChart("chart-latency", "latency_s", "secondes", v => Number(v).toFixed(1) + "s");
-}
-function renderReasoningChart() {
-  renderBarChart("chart-reasoning", "reasoning_tokens", "tokens");
-}
-
+/* ---------- Pareto chart ---------- */
 function renderParetoChart() {
   const ctx = document.getElementById("chart-pareto");
   if (charts["chart-pareto"]) charts["chart-pareto"].destroy();
@@ -349,8 +344,8 @@ function renderParetoChart() {
       data: [{ x: totalCost, y: pct }],
       backgroundColor: modelColor(m),
       borderColor: modelColor(m),
-      pointRadius: 8,
-      pointHoverRadius: 11,
+      pointRadius: 9,
+      pointHoverRadius: 13,
     };
   });
 
@@ -385,141 +380,143 @@ function renderParetoChart() {
   });
 }
 
-function renderScoresChart() {
-  const ctx = document.getElementById("chart-scores");
-  if (charts["chart-scores"]) charts["chart-scores"].destroy();
-  const models = activeModels();
-  const data = models.map(m => {
-    const rows = (CURRENT_RUN.scores || []).filter(s => s.model === m);
-    if (!rows.length) return 0;
-    const pass = rows.filter(s => s.resultat === "PASS").length;
-    return Math.round((pass / rows.length) * 100);
-  });
-
-  charts["chart-scores"] = new Chart(ctx, {
-    type: "bar",
-    data: {
-      labels: models.map(m => modelAlias(m)),
-      datasets: [{
-        label: "% PASS",
-        data,
-        backgroundColor: models.map(m => modelColor(m)),
-      }],
-    },
-    options: {
-      indexAxis: "y",
-      responsive: true,
-      plugins: { legend: { display: false }, tooltip: { callbacks: { label: c => c.parsed.x + "% de criteres PASS" } } },
-      scales: {
-        x: { min: 0, max: 100, ticks: { color: getCssVar("--chart-tick"), callback: v => v + "%" }, grid: { color: getCssVar("--chart-grid") } },
-        y: { ticks: { color: getCssVar("--chart-tick") }, grid: { color: getCssVar("--chart-grid") } },
-      },
-    },
-  });
-}
-
-/* ---------- Criteres regroupes par test ---------- */
-function renderScoresByTest() {
-  const container = document.getElementById("scores-by-test");
-  container.innerHTML = "";
-  const scores = CURRENT_RUN.scores || [];
-  if (!scores.length) {
-    container.innerHTML = `<p class="hint">Pas de scoring automatique pour ce run. Lance <code>python harness/score.py &lt;run_name&gt;</code>.</p>`;
-    return;
-  }
-
+/* ---------- Pivot table cost ---------- */
+function renderPivotTable() {
+  const container = document.getElementById("pivot-table");
   const models = activeModels();
   const tests = uniqueTests(CURRENT_RUN);
 
-  // Map rapide : test_id -> prompt (pour description + criteria desc)
-  const promptById = {};
-  (DATA.prompts || []).forEach(p => { promptById[p.id] = p; });
-
-  tests.forEach(([test_id, test_label]) => {
-    const testScores = models.flatMap(m => scoresForTest(m, test_id));
-    if (!testScores.length) return;
-
-    const block = document.createElement("div");
-    block.className = "test-block";
-
-    const criteria = [...new Set(testScores.map(s => s.critere))];
-    const totalPossible = criteria.length * models.length;
-    const passCount = testScores.filter(s => s.resultat === "PASS").length;
-
-    const prompt = promptById[test_id] || {};
-    const description = prompt.description || "";
-    // Map critere_id -> description (signification)
-    const critDescById = {};
-    (prompt.criteria || []).forEach(c => { critDescById[c.id] = c.desc; });
-
-    let html = `<h3>${test_id} — ${test_label}</h3>`;
-    if (description) {
-      html += `<p class="test-description-inline">${escapeHtml(description)}</p>`;
-    }
-    html += `<p class="summary">${passCount}/${totalPossible} critères PASS sur ${models.length} modèle(s)</p>`;
-    html += `<table class="criteria-table"><thead><tr><th style="width:32%">Critère</th>`;
-    models.forEach(m => html += `<th>${modelAlias(m)}</th>`);
-    html += `</tr></thead><tbody>`;
-    criteria.forEach(c => {
-      const critDesc = critDescById[c] || "";
-      html += `<tr><td>`;
-      html += `<code class="crit-id">${escapeHtml(c)}</code>`;
-      if (critDesc) {
-        html += `<div class="crit-desc">${escapeHtml(critDesc)}</div>`;
-      }
-      html += `</td>`;
-      models.forEach(m => {
-        const row = scoresForTest(m, test_id).find(s => s.critere === c);
-        if (!row) { html += "<td><span class='badge'>—</span></td>"; return; }
-        const cls = row.resultat === "PASS" ? "pass" : "fail";
-        const detail = row.detail ? `<span class="detail">${escapeHtml(row.detail)}</span>` : "";
-        html += `<td><span class="badge ${cls}">${row.resultat}</span>${detail}</td>`;
-      });
-      html += `</tr>`;
-    });
-    html += `</tbody></table>`;
-    block.innerHTML = html;
-    container.appendChild(block);
-  });
-}
-
-/* ---------- Reponses brutes ---------- */
-function renderResponses() {
-  if (!CURRENT_RUN || !CURRENT_TEST) return;
-  const test_id = CURRENT_TEST;
-  const prompt = (DATA.prompts || []).find(p => p.id === test_id);
-
-  const desc = document.getElementById("test-description");
-  if (prompt) {
-    const axe = prompt.axe || "n/a";
-    const promptText = prompt.prompt || prompt.prompt_template || "";
-    desc.innerHTML = `
-      <h3>${prompt.id} — ${prompt.label}</h3>
-      <p class="meta"><strong>Axe :</strong> ${escapeHtml(axe)}</p>
-      <dl>
-        <dt>Prompt envoyé</dt><dd><pre>${escapeHtml(promptText)}</pre></dd>
-        ${prompt.rubrique ? `<dt>Méthode d'évaluation</dt><dd><pre>${escapeHtml(prompt.rubrique)}</pre></dd>` : ""}
-      </dl>
-    `;
-  } else {
-    desc.innerHTML = `<p class="meta">Pas de descriptif disponible pour ce test.</p>`;
-  }
-
-  const grid = document.getElementById("responses-grid");
-  grid.innerHTML = "";
-  const models = activeModels();
-  if (!models.length) {
-    grid.innerHTML = `<p class="hint" style="padding:0 2rem">Sélectionne au moins un modèle.</p>`;
+  if (!models.length || !tests.length) {
+    container.innerHTML = `<p class="hint">Pas de données.</p>`;
     return;
   }
 
-  models.forEach(model => {
-    const resp = (CURRENT_RUN.responses || []).find(r => r.model === model && r.test_id === test_id);
-    const metric = CURRENT_RUN.metrics.find(m => m.model === model && m.test_id === test_id);
-    const scores = scoresForTest(model, test_id);
+  let maxCost = 0;
+  models.forEach(m => {
+    tests.forEach(([id]) => {
+      const row = CURRENT_RUN.metrics.find(r => r.model === m && r.test_id === id);
+      if (row && row.cost_usd > maxCost) maxCost = row.cost_usd;
+    });
+  });
 
-    const card = document.createElement("div");
-    card.className = "response-card";
+  const promptById2 = {};
+  (DATA.prompts || []).forEach(p => { promptById2[p.id] = p; });
+
+  let html = `<table class="pivot-table"><thead><tr><th class="pivot-model-header">Modèle</th>`;
+  tests.forEach(([id]) => {
+    const testLabel = promptById2[id]?.label || humanizeCriterionId(id);
+    html += `<th class="pivot-test-header" title="${escapeHtml(testLabel)}">${escapeHtml(id)}</th>`;
+  });
+  html += `</tr></thead><tbody>`;
+
+  models.forEach(m => {
+    html += `<tr><td class="pivot-model-cell">${escapeHtml(modelAlias(m))}</td>`;
+    tests.forEach(([id]) => {
+      const row = CURRENT_RUN.metrics.find(r => r.model === m && r.test_id === id);
+      if (!row || row.cost_usd == null) {
+        html += `<td class="pivot-cell pivot-empty">—</td>`;
+      } else {
+        const opacity = maxCost > 0 ? (row.cost_usd / maxCost) : 0;
+        const bg = `rgba(251, 146, 60, ${(opacity * 0.75 + 0.05).toFixed(3)})`;
+        html += `<td class="pivot-cell" style="background:${bg}">$${row.cost_usd.toFixed(4)}</td>`;
+      }
+    });
+    html += `</tr>`;
+  });
+
+  html += `</tbody></table>`;
+  container.innerHTML = html;
+}
+
+/* ---------- Tests combinés ---------- */
+
+function buildTestDocSection(prompt) {
+  const section = document.createElement("div");
+  section.className = "doc-section";
+
+  const axe = prompt.axe || "n/a";
+  const promptText = (prompt.prompt || prompt.prompt_template || "")
+    .replace("{vault_dump}", "[~50k tokens vault]")
+    .replace("{brief}", "[brief client fictif]");
+  const criteria = prompt.criteria || [];
+
+  let html = `<h3>Documentation</h3>`;
+  html += `<p><strong>Axe :</strong> ${escapeHtml(axe)}</p>`;
+  if (prompt.description) {
+    html += `<p class="test-description-inline">${escapeHtml(prompt.description)}</p>`;
+  }
+  html += `<p><strong>Prompt envoyé :</strong></p>`;
+  html += `<pre>${escapeHtml(promptText)}</pre>`;
+
+  if (criteria.length) {
+    html += `<p><strong>Critères de scoring (${criteria.length}) :</strong></p>`;
+    html += `<table class="criteria-table"><thead><tr>`;
+    html += `<th style="width:25%;">Id</th><th>Description (condition PASS)</th>`;
+    html += `</tr></thead><tbody>`;
+    criteria.forEach(c => {
+      html += `<tr><td><code>${escapeHtml(c.id)}</code></td><td>${escapeHtml(c.desc || "")}</td></tr>`;
+    });
+    html += `</tbody></table>`;
+  }
+
+  section.innerHTML = html;
+  return section;
+}
+
+function buildCriteriaTable(prompt, models) {
+  const section = document.createElement("div");
+  const scores = CURRENT_RUN.scores || [];
+
+  const testScores = models.flatMap(m => scoresForTest(m, prompt.id));
+  if (!testScores.length) {
+    section.innerHTML = `<h3>Critères × modèles</h3><p class="hint">Pas de scoring pour ce test.</p>`;
+    return section;
+  }
+
+  const criteria = [...new Set(testScores.map(s => s.critere))];
+  const totalPossible = criteria.length * models.length;
+  const passCount = testScores.filter(s => s.resultat === "PASS").length;
+
+  const critDescById = {};
+  (prompt.criteria || []).forEach(c => { critDescById[c.id] = c.desc; });
+
+  let html = `<h3>Critères × modèles</h3>`;
+  html += `<p class="summary">${passCount}/${totalPossible} critères PASS sur ${models.length} modèle(s)</p>`;
+  html += `<table class="criteria-table"><thead><tr><th style="width:32%">Critère</th>`;
+  models.forEach(m => html += `<th>${escapeHtml(modelAlias(m))}</th>`);
+  html += `</tr></thead><tbody>`;
+
+  criteria.forEach(c => {
+    const critDesc = critDescById[c] || "";
+    const critLabel = critDesc || humanizeCriterionId(c);
+    html += `<tr><td>`;
+    html += `<div class="crit-main">${escapeHtml(critLabel)}</div>`;
+    html += `<code class="crit-id crit-sub">${escapeHtml(c)}</code>`;
+    html += `</td>`;
+    models.forEach(m => {
+      const row = scoresForTest(m, prompt.id).find(s => s.critere === c);
+      if (!row) { html += "<td><span class='badge'>—</span></td>"; return; }
+      const cls = row.resultat === "PASS" ? "pass" : "fail";
+      const detail = row.detail ? `<span class="detail">${escapeHtml(row.detail)}</span>` : "";
+      html += `<td><span class="badge ${cls}">${row.resultat}</span>${detail}</td>`;
+    });
+    html += `</tr>`;
+  });
+
+  html += `</tbody></table>`;
+  section.innerHTML = html;
+  return section;
+}
+
+function buildResponsesGrid(prompt, models) {
+  const section = document.createElement("div");
+  let html = `<h3>Réponses brutes</h3>`;
+  html += `<div class="responses-grid">`;
+
+  models.forEach(model => {
+    const resp = (CURRENT_RUN.responses || []).find(r => r.model === model && r.test_id === prompt.id);
+    const metric = CURRENT_RUN.metrics.find(m => m.model === model && m.test_id === prompt.id);
+    const scores = scoresForTest(model, prompt.id);
 
     let stats = "stats indisponibles";
     let statusBadge = "";
@@ -561,14 +558,67 @@ function renderResponses() {
     }
 
     const sizeLabel = modelSizeLabel(model);
-    card.innerHTML = `
-      <h3 style="color:${modelColor(model)}">${modelAlias(model)}${sizeLabel ? ` <span class="model-size">${sizeLabel}</span>` : ""}${statusBadge}</h3>
+    html += `<div class="response-card">
+      <h3 style="color:${modelColor(model)}">${escapeHtml(modelAlias(model))}${sizeLabel ? ` <span class="model-size">${escapeHtml(sizeLabel)}</span>` : ""}${statusBadge}</h3>
       <p class="stats">${stats}</p>
       <pre>${resp && resp.response ? escapeHtml(resp.response) : "<i>Pas de réponse</i>"}</pre>
       ${reasoningHtml}
       ${scoresHtml}
+    </div>`;
+  });
+
+  html += `</div>`;
+  section.innerHTML = html;
+  return section;
+}
+
+function renderTestsCombined() {
+  const container = document.getElementById("tests-container");
+  container.innerHTML = "";
+  const prompts = DATA.prompts || [];
+  const models = activeModels();
+
+  if (!prompts.length) {
+    container.innerHTML = `<p class="hint">Pas de prompts chargés.</p>`;
+    return;
+  }
+
+  const openTests = getOpenTests();
+
+  prompts.forEach(prompt => {
+    const block = document.createElement("details");
+    block.className = "test-block";
+    block.dataset.testId = prompt.id;
+    if (openTests.has(prompt.id)) block.open = true;
+
+    block.addEventListener("toggle", () => {
+      const current = getOpenTests();
+      if (block.open) current.add(prompt.id); else current.delete(prompt.id);
+      saveOpenTests(current);
+    });
+
+    const testScores = (CURRENT_RUN.scores || []).filter(
+      s => s.test_id === prompt.id && SELECTED_MODELS.has(s.model)
+    );
+    const passCount = testScores.filter(s => s.resultat === "PASS").length;
+    const totalCount = testScores.length;
+
+    const summary = document.createElement("summary");
+    summary.innerHTML = `
+      <span class="test-summary-label">${escapeHtml(prompt.label || humanizeCriterionId(prompt.id))}</span>
+      <span class="test-summary-id"><code>${escapeHtml(prompt.id)}</code></span>
+      <span class="test-summary-score">${passCount}/${totalCount} critères PASS</span>
     `;
-    grid.appendChild(card);
+    block.appendChild(summary);
+
+    const content = document.createElement("div");
+    content.className = "test-content";
+    content.appendChild(buildTestDocSection(prompt));
+    content.appendChild(buildCriteriaTable(prompt, models));
+    content.appendChild(buildResponsesGrid(prompt, models));
+    block.appendChild(content);
+
+    container.appendChild(block);
   });
 }
 

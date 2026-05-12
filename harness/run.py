@@ -152,61 +152,44 @@ def _call_openrouter_once(api_key, model, prompt, reasoning_effort=None):
     if reasoning_effort:
         payload["reasoning"] = {"effort": reasoning_effort}
 
+    result = {
+        "success": False, "error": "", "latency_s": 0.0,
+        "response": "", "reasoning": "",
+        "tokens_in": 0, "tokens_out": 0, "reasoning_tokens": 0,
+    }
     start = time.time()
     try:
         with httpx.Client(timeout=TIMEOUT_S) as client:
             r = client.post(OPENROUTER_URL, headers=headers, json=payload)
-        latency = time.time() - start
+        result["latency_s"] = time.time() - start
 
         if r.status_code != 200:
-            return {
-                "success": False,
-                "error": f"HTTP {r.status_code}: {r.text[:500]}",
-                "latency_s": latency,
-                "response": "",
-                "tokens_in": 0,
-                "tokens_out": 0,
-                "reasoning": "",
-            }
+            result["error"] = f"HTTP {r.status_code}: {r.text[:500]}"
+            return result
 
         data = r.json()
         msg = data.get("choices", [{}])[0].get("message", {})
-        response = msg.get("content", "") or ""
-        reasoning = msg.get("reasoning", "") or msg.get("reasoning_content", "") or ""
+        result["response"] = msg.get("content", "") or ""
+        result["reasoning"] = msg.get("reasoning", "") or msg.get("reasoning_content", "") or ""
         usage = data.get("usage", {})
 
         # reasoning_tokens : expose par certains providers
         # OpenAI o-series : usage.completion_tokens_details.reasoning_tokens
         # OpenRouter direct : usage.reasoning_tokens
         # Anthropic thinking : usage.completion_tokens_details.reasoning_tokens (via OpenRouter)
-        reasoning_tokens = 0
         details = usage.get("completion_tokens_details") or {}
         if isinstance(details, dict):
-            reasoning_tokens = details.get("reasoning_tokens", 0) or 0
-        if not reasoning_tokens:
-            reasoning_tokens = usage.get("reasoning_tokens", 0) or 0
+            result["reasoning_tokens"] = details.get("reasoning_tokens", 0) or 0
+        if not result["reasoning_tokens"]:
+            result["reasoning_tokens"] = usage.get("reasoning_tokens", 0) or 0
 
-        return {
-            "success": True,
-            "error": "",
-            "latency_s": latency,
-            "response": response,
-            "reasoning": reasoning,
-            "tokens_in": usage.get("prompt_tokens", 0),
-            "tokens_out": usage.get("completion_tokens", 0),
-            "reasoning_tokens": reasoning_tokens,
-        }
+        result["tokens_in"] = usage.get("prompt_tokens", 0)
+        result["tokens_out"] = usage.get("completion_tokens", 0)
+        result["success"] = True
     except Exception as e:
-        return {
-            "success": False,
-            "error": f"Exception: {type(e).__name__}: {e}",
-            "latency_s": time.time() - start,
-            "response": "",
-            "reasoning": "",
-            "tokens_in": 0,
-            "tokens_out": 0,
-            "reasoning_tokens": 0,
-        }
+        result["error"] = f"Exception: {type(e).__name__}: {e}"
+        result["latency_s"] = time.time() - start
+    return result
 
 
 def compute_cost(tokens_in, tokens_out, model_info):
@@ -360,14 +343,7 @@ def main():
             # Marque le retry
             with open(md_path, "a") as f:
                 f.write(f"\n<!-- RETRY_FAILED {datetime.now().isoformat()} -->\n\n")
-        elif not append_mode or not md_path.exists():
-            # Mode normal (nouveau run ou modele nouveau) : ecrit header
-            with open(md_path, "w") as f:
-                f.write(f"# {model}\n\n")
-                f.write(f"Alias : {alias}\n")
-                f.write(f"Run : {run_name}\n\n")
         else:
-            # append mode (relance complete d'un modele) : reecrit header
             with open(md_path, "w") as f:
                 f.write(f"# {model}\n\n")
                 f.write(f"Alias : {alias}\n")
